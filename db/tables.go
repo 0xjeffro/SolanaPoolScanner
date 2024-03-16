@@ -22,12 +22,8 @@ func CreateTable() {
 	}
 	db := GetConnection()
 
-	if !db.Migrator().HasTable(&Trade{}) {
-		err = db.Migrator().CreateTable(&Trade{})
-		if err != nil {
-			panic(err)
-		}
-	} else {
-		panic("Table already exists")
+	err = db.AutoMigrate(&Trade{})
+	if err != nil {
+		panic(err)
 	}
 }

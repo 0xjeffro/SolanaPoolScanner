@@ -1,8 +1,8 @@
 package types
 
-import (
-	"encoding/json"
-)
+import "encoding/json"
+
+// Response Data
 
 type Quote struct {
 	Symbol         string      `json:"symbol"`

@@ -8,7 +8,7 @@ import (
 func CheckEnv() {
 	necessaryEnv := []string{
 		"API_TOKEN", "DSN",
-		"TICKER",
+		"TICKER", "TOKEN_ADDR",
 	}
 	for _, env := range necessaryEnv {
 		if os.Getenv(env) == "" {

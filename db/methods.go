@@ -2,7 +2,7 @@ package db
 
 import (
 	"SolanaPoolScanner/types"
-	"fmt"
+	"go.uber.org/zap"
 )
 
 func Insert(rep types.Response, jsonData string) {
@@ -55,11 +55,10 @@ func Insert(rep types.Response, jsonData string) {
 
 	// Insert rows into database
 	conn := GetConnection()
-	err := conn.Create(&rows).Error
-	if len(rows) == 0 {
-		fmt.Println("No rows to insert", jsonData)
-	}
-	if err != nil {
-		fmt.Println("Error inserting rows: ", err)
+	if len(rows) != 0 {
+		err := conn.Create(&rows).Error
+		if err != nil {
+			zap.S().Error("Error inserting rows: ", err)
+		}
 	}
 }

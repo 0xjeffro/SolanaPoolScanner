@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"go.uber.org/zap"
 	"io"
 	"net/http"
 	"os"
@@ -20,6 +21,7 @@ func initStats(nLeaders int, nWorkers int) {
 	WorkerStatus = types.Status{
 		Leaders: make([]types.Leader, nLeaders),
 		Workers: make([]types.Worker, nWorkers),
+		Clock:   types.Clock{},
 	}
 }
 
@@ -35,7 +37,35 @@ func StartWorkers(nLeaders int, nWorkers int) {
 	for i := 0; i < nWorkers; i++ {
 		go worker(i, PageLimit*nWorkers, tokenAddr, i*PageLimit, token)
 	}
+	go clock()
+}
 
+func clock() {
+	WorkerStatus.Clock.Active = true
+	defer func() {
+		WorkerStatus.Clock.Active = false
+		if err := recover(); err != nil {
+			WorkerStatus.Clock.ExitMsg = fmt.Sprintf("%s", err)
+		}
+	}()
+	for {
+		allCatchedUp := true
+		activeWorkers := 0
+		for i := range WorkerStatus.Workers {
+			if WorkerStatus.Workers[i].Active {
+				activeWorkers += 1
+				if WorkerStatus.Workers[i].APICallCountSuccess < WorkerStatus.Clock.Clock {
+					allCatchedUp = false
+				}
+			}
+		}
+		if allCatchedUp {
+			WorkerStatus.Clock.Clock += 1
+		}
+		if activeWorkers == 0 {
+			break
+		}
+	}
 }
 
 func leader(leaderID int, tokenAddr string, apiToken string) {
@@ -50,7 +80,7 @@ func leader(leaderID int, tokenAddr string, apiToken string) {
 	WorkerStatus.Leaders[leaderID].Active = true
 
 	for {
-		fmt.Println("Leader ", leaderID)
+		zap.S().Info("Leader ", leaderID)
 		rsp, data, err := getTokenTrade(tokenAddr, PageLimit*leaderID, PageLimit, "swap", apiToken)
 
 		WorkerStatus.Leaders[leaderID].LastAPICallAt = time.Now()
@@ -78,11 +108,16 @@ func worker(workerID int, stepSize int, tokenAddr string, offset int, apiToken s
 	WorkerStatus.Workers[workerID].Active = true
 
 	for {
-		fmt.Println("Worker ", workerID, " offset ", offset)
+		zap.S().Info("Worker ", workerID, " offset ", offset)
 
 		var rsp types.Response
 		var data string
 		var err error
+		for {
+			if WorkerStatus.Workers[workerID].APICallCountSuccess < WorkerStatus.Clock.Clock {
+				break
+			}
+		}
 		for {
 			rsp, data, err = getTokenTrade(tokenAddr, offset, PageLimit, "swap", apiToken)
 
@@ -96,8 +131,8 @@ func worker(workerID int, stepSize int, tokenAddr string, offset int, apiToken s
 			if err == nil && rsp.Success {
 				break
 			} else {
-				fmt.Println("Worker ", workerID, " offset ", offset, " failed", "retrying")
-				time.Sleep(3 * time.Second)
+				zap.S().Error("Worker ", workerID, " offset ", offset, " failed", "retrying")
+				time.Sleep(1 * time.Second)
 			}
 		}
 
@@ -129,7 +164,7 @@ func getTokenTrade(addr string, offset int, lim int, txType string, token string
 	body, _ := io.ReadAll(res.Body)
 
 	if res.StatusCode != 200 {
-		fmt.Println("Error: ", res.StatusCode, res.Body)
+		zap.S().Error("Error: ", res.StatusCode, res.Body)
 		return types.Response{}, "", errors.New("Error: " + string(body))
 	}
 

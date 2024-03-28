@@ -22,14 +22,8 @@ type Worker struct {
 	ExitMsg             string    `json:"exitMsg"`
 }
 
-type Status struct {
-	Leaders []Leader `json:"leaders"`
-	Workers []Worker `json:"workers"`
-	Clock   Clock    `json:"clock"`
-}
-
-type Clock struct {
-	Clock   int    `json:"clock"`
-	Active  bool   `json:"active"`
-	ExitMsg string `json:"exitMsg"`
+type TaskSender struct {
+	CurrentBatch int    `json:"clock"`
+	Active       bool   `json:"active"`
+	ExitMsg      string `json:"exitMsg"`
 }

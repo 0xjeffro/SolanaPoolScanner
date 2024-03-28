@@ -13,134 +13,119 @@ import (
 	"time"
 )
 
-const PageLimit = 50 // 50 items per page
+// PageLimit the maximum value is dictated by the birdeye API,
+// see: https://docs.birdeye.so/reference/get_defi-txs-token
+const PageLimit = 50
+const MaxWorkers = 2
 
-var WorkerStatus types.Status
+var LeaderStatus types.Leader
+var WorkerStatus types.Worker
 
-func initStats(nLeaders int, nWorkers int) {
-	WorkerStatus = types.Status{
-		Leaders: make([]types.Leader, nLeaders),
-		Workers: make([]types.Worker, nWorkers),
-		Clock:   types.Clock{},
-	}
-}
+var taskC chan int
+var taskFinished chan bool
+var noMoreTask chan bool
 
-func StartWorkers(nLeaders int, nWorkers int) {
-	initStats(nLeaders, nWorkers)
+func StartWorkers() {
 	token := os.Getenv("API_TOKEN")
 	tokenAddr := os.Getenv("TOKEN_ADDR")
 
-	for i := 0; i < nLeaders; i++ {
-		go leader(i, tokenAddr, token)
-	}
+	// init channels
+	taskC = make(chan int, MaxWorkers)
+	taskFinished = make(chan bool, MaxWorkers)
+	noMoreTask = make(chan bool, MaxWorkers)
 
-	for i := 0; i < nWorkers; i++ {
-		go worker(i, PageLimit*nWorkers, tokenAddr, i*PageLimit, token)
+	go taskGenerator()
+
+	for i := 0; i < MaxWorkers; i++ {
+		go worker(i, tokenAddr, token)
 	}
-	go clock()
 }
 
-func clock() {
-	WorkerStatus.Clock.Active = true
-	defer func() {
-		WorkerStatus.Clock.Active = false
-		if err := recover(); err != nil {
-			WorkerStatus.Clock.ExitMsg = fmt.Sprintf("%s", err)
-		}
-	}()
+func taskGenerator() {
+	offset := 0
 	for {
-		allCatchedUp := true
-		activeWorkers := 0
-		for i := range WorkerStatus.Workers {
-			if WorkerStatus.Workers[i].Active {
-				activeWorkers += 1
-				if WorkerStatus.Workers[i].APICallCountSuccess < WorkerStatus.Clock.Clock {
-					allCatchedUp = false
+		if len(taskC) == 0 {
+			select {
+			case <-taskFinished:
+				for i := 0; i < MaxWorkers; i++ {
+					noMoreTask <- true
+				}
+				return
+			default:
+				zap.S().Info("+++++ Generating tasks +++++")
+				for i := 0; i < MaxWorkers; i++ {
+					taskC <- offset
+					offset += PageLimit
 				}
 			}
 		}
-		if allCatchedUp {
-			WorkerStatus.Clock.Clock += 1
+	}
+}
+
+func worker(workerID int, tokenAddr string, apiToken string) {
+	defer func() {
+		zap.S().Info("Worker ", workerID, " is exiting")
+		if err := recover(); err != nil {
+			zap.S().Error("Worker ", workerID, " failed with error: ", err)
 		}
-		if activeWorkers == 0 {
-			break
+	}()
+	for { // keep fetching tasks from the task pipeline
+		var rsp types.Response
+		var err error
+		select {
+		case <-noMoreTask:
+			return
+		case offset := <-taskC:
+			fmt.Println("Worker", workerID, "received", offset)
+			for { // retry on error
+				rsp, _, err = getTokenTrade(tokenAddr, offset, PageLimit, "swap", apiToken)
+
+				if err == nil && rsp.Success {
+					db.Insert(rsp)
+					fmt.Println("Worker", workerID, "offset", offset, "done")
+					if rsp.Data.HasNext == false {
+						taskFinished <- true
+					}
+					break
+				} else {
+					zap.S().Error("Worker ", workerID, " offset ", offset, " failed", "retrying")
+					time.Sleep(500 * time.Millisecond)
+				}
+			}
 		}
 	}
+}
+
+func StartLeader() {
+	go leader(0, os.Getenv("TOKEN_ADDR"), os.Getenv("API_TOKEN"))
 }
 
 func leader(leaderID int, tokenAddr string, apiToken string) {
 	defer func() {
-		WorkerStatus.Leaders[leaderID].Active = false
+		LeaderStatus.Active = false
 		if err := recover(); err != nil {
-			WorkerStatus.Leaders[leaderID].ExitMsg = fmt.Sprintf("%s", err)
+			LeaderStatus.ExitMsg = fmt.Sprintf("%s", err)
 		}
 	}()
 
-	WorkerStatus.Leaders[leaderID].ID = leaderID
-	WorkerStatus.Leaders[leaderID].Active = true
+	LeaderStatus.ID = leaderID
+	LeaderStatus.Active = true
 
 	for {
-		zap.S().Info("Leader ", leaderID)
-		rsp, data, err := getTokenTrade(tokenAddr, PageLimit*leaderID, PageLimit, "swap", apiToken)
+		zap.S().Info("Leader ", leaderID, " is fetching")
+		rsp, _, err := getTokenTrade(tokenAddr, PageLimit*leaderID, PageLimit, "swap", apiToken)
 
-		WorkerStatus.Leaders[leaderID].LastAPICallAt = time.Now()
+		LeaderStatus.LastAPICallAt = time.Now()
 		if err != nil {
-			WorkerStatus.Leaders[leaderID].APICallCountFail += 1
+			LeaderStatus.APICallCountFail += 1
 		} else {
-			WorkerStatus.Leaders[leaderID].APICallCountSuccess += 1
+			LeaderStatus.APICallCountSuccess += 1
 		}
 
-		if err == nil && rsp.Data.HasNext {
-			db.Insert(rsp, data)
-		}
-	}
-}
-
-func worker(workerID int, stepSize int, tokenAddr string, offset int, apiToken string) {
-	defer func() {
-		WorkerStatus.Workers[workerID].Active = false
-		if err := recover(); err != nil {
-			WorkerStatus.Workers[workerID].ExitMsg = fmt.Sprintf("%s", err)
-		}
-	}()
-
-	WorkerStatus.Workers[workerID].ID = workerID
-	WorkerStatus.Workers[workerID].Active = true
-
-	for {
-		zap.S().Info("Worker ", workerID, " offset ", offset)
-
-		var rsp types.Response
-		var data string
-		var err error
-		for {
-			if WorkerStatus.Workers[workerID].APICallCountSuccess < WorkerStatus.Clock.Clock {
-				break
-			}
-		}
-		for {
-			rsp, data, err = getTokenTrade(tokenAddr, offset, PageLimit, "swap", apiToken)
-
-			WorkerStatus.Workers[workerID].LastAPICallAt = time.Now()
-			if err != nil {
-				WorkerStatus.Workers[workerID].APICallCountFail += 1
-			} else {
-				WorkerStatus.Workers[workerID].APICallCountSuccess += 1
-			}
-
-			if err == nil && rsp.Success {
-				break
-			} else {
-				zap.S().Error("Worker ", workerID, " offset ", offset, " failed", "retrying")
-				time.Sleep(1 * time.Second)
-			}
-		}
-
-		if rsp.Data.HasNext {
-			db.Insert(rsp, data)
-			offset += stepSize
+		if err == nil {
+			db.Insert(rsp)
 		} else {
-			break
+			zap.S().Error("Leader ", leaderID, err)
 		}
 	}
 }

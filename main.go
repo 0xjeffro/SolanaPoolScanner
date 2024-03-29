@@ -11,7 +11,7 @@ var MODE = os.Getenv("MODE")
 
 func main() {
 	utils.Init()
-	if MODE == "" {
+	if MODE == "" || MODE == "0" {
 		workers.StartLeader()
 	} else {
 		workers.StartWorkers()

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"go.uber.org/zap"
 	"io"
+	"math"
 	"net/http"
 	"os"
 	"time"
@@ -17,6 +18,7 @@ import (
 // see: https://docs.birdeye.so/reference/get_defi-txs-token
 const PageLimit = 50
 const MaxWorkers = 2
+const MAXSLEEP = 60 * 1000
 
 var LeaderStatus types.Leader
 var WorkerStatus types.Worker
@@ -108,11 +110,18 @@ func leader(leaderID int, tokenAddr string, apiToken string) {
 		}
 	}()
 
+	sleepTime := 1
+	lastDataMap := make(map[string]bool)
+	lastHit := 0
+	lastAvgSleepTime := 1
+	loopCount := 0
+
 	LeaderStatus.ID = leaderID
 	LeaderStatus.Active = true
 
 	for {
-		zap.S().Info("Leader ", leaderID, " is fetching")
+		loopCount += 1
+		zap.S().Info("Loop ", loopCount, " ...", " LastHits:", lastHit, " LastSleep:", sleepTime, "ms", " AvgSleep:", lastAvgSleepTime, "ms")
 		rsp, _, err := getTokenTrade(tokenAddr, PageLimit*leaderID, PageLimit, "swap", apiToken)
 
 		LeaderStatus.LastAPICallAt = time.Now()
@@ -123,10 +132,28 @@ func leader(leaderID int, tokenAddr string, apiToken string) {
 		}
 
 		if err == nil {
+			hit := 0
+			newLastDataMap := make(map[string]bool)
+			for _, item := range rsp.Data.Items {
+				newLastDataMap[item.TxHash] = true
+				if val, ok := lastDataMap[item.TxHash]; ok && val == true {
+					hit += 1
+				}
+			}
+			if hit < PageLimit/5 {
+				sleepTime = 1
+			} else if PageLimit/5 <= hit && hit < PageLimit/5*3 {
+				sleepTime = int(math.Max(float64(sleepTime/2), 1))
+			} else {
+				sleepTime = int(math.Min(float64(sleepTime+1000), MAXSLEEP))
+			}
+			lastDataMap = newLastDataMap
+			lastAvgSleepTime = int((float64(loopCount)-1.0)/float64(loopCount)*float64(lastAvgSleepTime) + float64(sleepTime)/float64(loopCount))
 			db.Insert(rsp)
 		} else {
 			zap.S().Error("Leader ", leaderID, err)
 		}
+		time.Sleep(time.Duration(sleepTime) * time.Millisecond)
 	}
 }
 

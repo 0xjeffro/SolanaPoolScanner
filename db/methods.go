@@ -18,7 +18,7 @@ func Insert(rep types.Response) {
 
 		jsonItem, _ := json.Marshal(item)
 
-		if item.Base.Price != nil {
+		if item.BasePrice != nil {
 			estPrice = *item.BasePrice
 		} else if item.Base.NearestPrice != nil {
 			estPrice = *item.Base.NearestPrice
@@ -46,7 +46,6 @@ func Insert(rep types.Response) {
 	conn := GetConnection()
 	if len(rows) != 0 {
 		err := conn.Clauses(clause.OnConflict{DoNothing: true}).Create(&rows).Error
-		//err := conn.Create(&rows).Error
 		if err != nil {
 			zap.S().Error("Error inserting rows: ", err)
 		}
